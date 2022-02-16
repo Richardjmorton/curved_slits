@@ -43,10 +43,22 @@ class PointPicker:
 
 
 def get_spline_points(gpoints: np.ndarray, spacing: int = 1,
-                      oversample: bool = False,
                       diff_tol: float = 1e-2) -> np.ndarray:
     """
     Return points along 2Dspline curve (uses 3rd Order).
+
+    Oversampling works by setting the spacing to be smaller to make the
+    point density larger. Then by summing the lengths between the
+    points together to make up the original desired length the correct
+    point spacing is achieved while reducing the impact of any error in
+    the splining routine.
+
+    The check for when the inter-point distance (from oversampled
+    curve) has reached the desired spacing is achieved by finding the
+    cumulative distance along the (oversampled) curve. Then by dividing
+    this cumulative distance vector by the original sampling it is
+    apparent that every time the desired original spacing is found the
+    floor of the cumulative distance will increase by 1.
 
     Parameters
     ----------
@@ -68,61 +80,42 @@ def get_spline_points(gpoints: np.ndarray, spacing: int = 1,
     xvec = gpoints[:, 0]
     yvec = gpoints[:, 1]
 
-    if oversample:
+    max_diff = diff_tol + 1
+    up_sample = 2
 
-        # Oversampling works by setting the spacing to be smaller to make the
-        # point density larger. Then by summing the lengths between the
-        # points together to make up the original desired length the correct
-        # point spacing is achieved while reducing the impact of any error in
-        # the splining routine.
-        #
-        # The check for when the inter-point distance (from oversampled
-        # curve) has reached the desired spacing is achieved by finding the
-        # cumulative distance along the (oversampled) curve. Then by dividing
-        # this cumulative distance vector by the original sampling it is
-        # apparent that every time the desired original spacing is found the
-        # floor of the cumulative distance will increase by 1.
+    # spl = splrep(xvec, yvec)
+    tck, u = splprep([xvec, yvec], s=0)
+    ospacing = spacing
 
-        max_diff = diff_tol + 1
-        up_sample = 2
+    while max_diff > diff_tol:
 
-        # spl = splrep(xvec, yvec)
-        tck, u = splprep([xvec, yvec], s=0)
-        ospacing = spacing
+        spacing = np.float64(ospacing) / (10.**up_sample)
 
-        while max_diff > diff_tol:
-
-            spacing = np.float64(ospacing) / (10.**up_sample)
-
-            # xnew_l = np.linspace(xvec[0], xvec[-1], int(1 / spacing))
-            u = np.linspace(0, 1, int(1 / spacing))
-
-            # ynew_l = splev(xnew_l, spl)
-            xnew_l, ynew_l = splev(u, tck)
-            point_num = xnew_l.shape[0]
-
-            # linear distance between spline points
-            diff_vec_l = np.sqrt((np.roll(xnew_l, -1) - xnew_l)**2 + \
-                                 (np.roll(ynew_l, -1) - ynew_l)**2
-                                 )
-            diff_vec_l = np.concatenate([[0], diff_vec_l[0:point_num - 1]])
-            cum_diff_ints = (np.cumsum(diff_vec_l) / ospacing).astype(int)
-
-            locs = cum_diff_ints - np.roll(cum_diff_ints, 1)
-            locs[0] = 1
-
-            xnew = xnew_l[locs == 1]
-            ynew = ynew_l[locs == 1]
-
-            diff_vec = np.sqrt((np.roll(xnew, -1) - xnew)**2 + \
-                               (np.roll(ynew, -1) - ynew)**2)
-            max_diff = np.abs((diff_vec[:-1] - 1)).max()
-            up_sample += 1
-
-    else:
-        tck, u = splprep([xvec, yvec], s=0)
+        # xnew_l = np.linspace(xvec[0], xvec[-1], int(1 / spacing))
         u = np.linspace(0, 1, int(1 / spacing))
-        xnew, ynew = splev(u, tck)
+
+        # ynew_l = splev(xnew_l, spl)
+        xnew_l, ynew_l = splev(u, tck)
+        point_num = xnew_l.shape[0]
+
+        # linear distance between spline points
+        diff_vec_l = np.sqrt((np.roll(xnew_l, -1) - xnew_l)**2 + \
+                             (np.roll(ynew_l, -1) - ynew_l)**2
+                             )
+        diff_vec_l = np.concatenate([[0], diff_vec_l[0:point_num - 1]])
+        cum_diff_ints = (np.cumsum(diff_vec_l) / ospacing).astype(int)
+
+        locs = cum_diff_ints - np.roll(cum_diff_ints, 1)
+        locs[0] = 1
+
+        xnew = xnew_l[locs == 1]
+        ynew = ynew_l[locs == 1]
+
+        diff_vec = np.sqrt((np.roll(xnew, -1) - xnew)**2 + \
+                           (np.roll(ynew, -1) - ynew)**2)
+        max_diff = np.abs((diff_vec[:-1] - 1)).max()
+        up_sample += 1
+
 
     return np.array((xnew, ynew))
 
@@ -164,7 +157,7 @@ def calc_norms(spline_vec: np.ndarray):
 
 
 def spline_slit(data: np.ndarray, gpoints: np.ndarray, length: int = 10,
-                spacing: int = 1, oversample: bool = False,
+                spacing=1,
                 diff_tol: float = 1e-2, plot_slit: bool = False):
     """
     Calculates and retrives data along a s specified guide.
@@ -177,7 +170,7 @@ def spline_slit(data: np.ndarray, gpoints: np.ndarray, length: int = 10,
     Parameters
     ----------
     data - data array in form nt, ny, nx
-    
+
     gpoints - guide points to define spline (from PointPicker)
 
     length - half length of slit
@@ -185,15 +178,11 @@ def spline_slit(data: np.ndarray, gpoints: np.ndarray, length: int = 10,
     spacing - Euclidean distance between spline points (approximate
           if oversample not used)
 
-
-    oversample - set to oversample spline - ensures accurate spacing
-
     diff_tol - accuracy of spacing. Setting this value smaller leads to longer
                runs times.
 
     """
     spline_vec = get_spline_points(gpoints.T, spacing=spacing,
-                                   oversample=oversample,
                                    diff_tol=diff_tol)
 
     norm_arr = calc_norms(spline_vec)
